@@ -8,7 +8,7 @@
         ".": { "import": "./dist/index.js" }
     },
 
-    "files": ["dist", "skills", "README.md"],
+    "files": ["dist", "skills", "commands", "README.md"],
 
     "scripts": {
         "build": "bun build src/index.ts --outdir dist --target node",
@@ -21,7 +21,8 @@
     },
     "devDependencies": {
         "@opencode-ai/plugin": "^1.18.11",
-        "typescript": "^5.x"
+        "typescript": "^5.x",
+        "@types/node": "^20.0.0"
     },
 
     "engines": {

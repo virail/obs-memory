@@ -1,4 +1,4 @@
-import { basename, dirname } from "node:path";
+import { basename } from "node:path";
 
 export type Observation = {
   timestamp: string;    // ISO 8601
