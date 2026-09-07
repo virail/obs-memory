@@ -1,0 +1,45 @@
+{
+    "name": "@virail/obs-memory",
+    "version": "1.0.0",
+    "description": "Observational memory for opencode - structured observations, topic consolidation, journey, and an injected index at compaction",
+    "type": "module",
+    "main": "./dist/index.js",
+    "exports": {
+        ".": { "import": "./dist/index.js" }
+    },
+
+    "files": ["dist", "skills", "README.md"],
+
+    "scripts": {
+        "build": "bun build src/index.ts --outdir dist --target node",
+        "typecheck": "tsc --noEmit",
+        "prepublishOnly": "bun run build"
+    },
+
+    "peerDependencies": {
+        "@opencode-ai/plugin": "^1.18.11"
+    },
+    "devDependencies": {
+        "@opencode-ai/plugin": "^1.18.11",
+        "typescript": "^5.x"
+    },
+
+    "engines": {
+        "opencode": "^1.0.0"
+    },
+
+    "publishConfig": {
+        "access": "public",
+        "provenance": true
+    },
+
+    "keywords": ["opencode", "opencode-plugin", "memory", "observations", "observational-memory"],
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/virail/obs-memory.git"
+    },
+    "author": "virail",
+
+    "bugs": { "url": "https://github.com/virail/obs-memory/issues" }
+}
