@@ -18,7 +18,9 @@ export const MemoryPlugin: Plugin = async ({ project, client, $, directory, work
 	client.app.log({ body: {service: "@virail/memory-plugin", level: "info", message: "[memory plugin] loaded" }});
 
 	const ROOT = join(homedir(), ".config", "opencode", "memory");
-	const CONSOLIDATION_THRESHOLD = 50 * 1000;
+	const CONSOLIDATION_THRESHOLD = 200;
+
+    const HELPER_SESSIONS = new Set<string>();
 
 	function topicPath(sessionID: string, topic: string): string {
 		return join(ROOT, sessionID, "topics", topic + ".md");
@@ -50,12 +52,15 @@ export const MemoryPlugin: Plugin = async ({ project, client, $, directory, work
 
 	function appendToFile(path: string, sessionID: string, content: string, client: OpencodeClient): void {
 		createFileIfNotExists(path);
-		// if file is too big, we move it to an archive file and create a new empty file
-		const buffer = readFromFile(path);
-		if (shouldConsolidate(sessionID)) {
-			consolidate(sessionID, client);
-		}
 		appendFileSync(path, content);
+		// if file is too big, we move it to an archive file and create a new empty file
+		if (shouldConsolidate(sessionID)) {
+            const raw = readFromFile(observationPath(sessionID)) ?? "";
+            clearBuffer(sessionID);
+			void consolidate(sessionID, raw, client).catch((e) => {
+                client.tui.showToast({ body: { title: "@virail/obs-memory", message: String(e), variant: "error" }})
+            });
+		}
 	}
 	
 	function readFromFile(path: string): string | null {
@@ -73,19 +78,17 @@ export const MemoryPlugin: Plugin = async ({ project, client, $, directory, work
 		return content.length > CONSOLIDATION_THRESHOLD;
 	}
 	
-	function consolidate(sessionID: string, client: OpencodeClient): void {
-		
-
+	async function consolidate(sessionID: string, raw: string, client: OpencodeClient): Promise<void> {
 		// 1. read and pare observations
-		const raw = readFromFile(observationPath(sessionID));
-		const observations = parseObservations(raw ?? "");
+		const observations = parseObservations(raw);
 
 		// 2. group by filepath
 		const grouped = groupObservationsByFilepath(observations);
 
 		// 3. write topic files
 		for (const [topicKey, groupedObs] of Object.entries(grouped)) {
-			writeTopicFiles(sessionID, topicKey, groupedObs);
+            const summary = await deriveSummary(groupedObs);
+			writeTopicFiles(sessionID, topicKey, groupedObs, summary);
 		}
 		
 		// 4. update journey log
@@ -95,7 +98,7 @@ export const MemoryPlugin: Plugin = async ({ project, client, $, directory, work
 		regenerateIndex(sessionID);
 
 		// 6. clear buffer
-		clearBuffer(sessionID);
+		// clearBuffer(sessionID);
 
 		// Toast on consolidation
 		client.tui.showToast({ body: { message: "Consolidating memory", variant: "info" }});
@@ -240,7 +243,7 @@ observation_count: ${fm.observationCount}
 		return String(Number(prev) + observations.length);
 	}
 
-	function writeTopicFiles(sessionID: string, topicKey: string, observations: Observation[], k: number = 4): void {
+	function writeTopicFiles(sessionID: string, topicKey: string, observations: Observation[], summary: string, k: number = 4): void {
 		const path = topicPath(sessionID, topicKey);
 
 		var frontMatter: FrontMatter = { id: "", title: "", summary: "", updated: "", observationCount: "" };
@@ -255,19 +258,45 @@ observation_count: ${fm.observationCount}
 
 		frontMatter.updated = new Date().toISOString();
 		frontMatter.observationCount = countObservations(frontMatter.observationCount, observations);
-		frontMatter.summary = deriveSummary(observations);
+		frontMatter.summary = summary;
 
-		for (const obs of observations) {
-			body += "\n" + formatObservation(obs);
-		}
+        body += "\n" + observations.map(formatObservation).join("\n");
 
 		atomicWrite(path, renderFrontMatter(frontMatter) + "\n" + body)
 	}
 	
-	function deriveSummary(observations: Observation[], k: number = 4): string {
-		const countTag = countByTag(observations);
-		const topK = countTag.split(", ").slice(0, k);
-		return `obs: ${observations.length}; ${topK.join(", ")}`;
+	async function deriveSummary(observations: Observation[], k: number = 4): Promise<string> {
+        let id: string | undefined;
+        try {
+            const s = await client.session.create({ body: { title: "obs-memory: summarise" } });
+            id = s.data!.id;
+            HELPER_SESSIONS.add(id);
+            const transcript = observations.map(formatObservation).join("\n");
+            const res = await client.session.prompt({
+                path: { id },
+                body: {
+                    agent: "memory-summariser",
+                    // model: { providerID: "opencode", modelID: "big-pickle" },
+                    // system: "You summarise developer observations. Reply with one line, no markdown.",
+                    parts: [{ type: "text", text: transcript }],
+                },
+            });
+            const text = (res.data?.parts ?? [])
+                .filter(p => p.type === "text")
+                .map(p => p.text)
+                .join("")
+
+            return text.replace(/\s+/g, " ").replace(/\|/g, "/").trim();
+        } catch {
+            const countTag = countByTag(observations);
+            const topK = countTag.split(", ").slice(0, k);
+            return `obs: ${observations.length}; ${topK.join(", ")}`;
+        } finally {
+            if (id) {
+                HELPER_SESSIONS.delete(id);
+                await client.session.delete({ path: { id } }).catch(() => {});
+            }
+        }
 	}
 
 	function atomicWrite(path: string, content: string): void {
@@ -312,7 +341,21 @@ observation_count: ${fm.observationCount}
 	}
 
 	return {
+        config: async (cfg) => {
+            cfg.agent = {
+                ...cfg.agent,
+                "memory-summariser": {
+                    description: "Summarises obs-memory observations",
+                    mode: "subagent",
+                    model: "opencode/big-pickle",
+                    maxSteps: 1,
+                    prompt: "You summarise developer observations. Reply with one line, no markdown.",
+                },
+            };
+        },
+
 		"chat.message": async (input, output) => {
+            if (HELPER_SESSIONS.has(input.sessionID)) return;
 			mkdirSync(ROOT, { recursive: true });
 			const text = output.parts
 				.filter((p) => "type" in p && p.type === "text")
@@ -350,6 +393,7 @@ observation_count: ${fm.observationCount}
 		},
 		
 		"tool.execute.after": async (input, output) => {
+            if (HELPER_SESSIONS.has(input.sessionID)) return;
 			mkdirSync(ROOT, { recursive: true });
 			const toolName = input.tool;
 			const observation = extractObservation(toolName, input.args, output);
